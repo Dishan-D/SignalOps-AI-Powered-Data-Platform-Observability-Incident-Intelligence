@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1.7
+#
+# Detection tier: trains the LogBERT detector and runs the streaming scorer.
+#
+# Separate from the base Python image because PyTorch is large, and the
+# producer, migration and Spark services have no reason to carry it.
+
+FROM python:3.12-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /build
+COPY requirements.txt ./
+
+# CPU-only wheels: the default index pulls the CUDA build, which is several
+# gigabytes of driver payload that cannot be used in this stack.
+RUN python -m venv /opt/venv \
+ && /opt/venv/bin/pip install --upgrade pip \
+ && /opt/venv/bin/pip install \
+      --index-url https://download.pytorch.org/whl/cpu \
+      torch \
+ && /opt/venv/bin/pip install -r requirements.txt
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONFAULTHANDLER=1 \
+    PATH="/opt/venv/bin:${PATH}" \
+    PYTHONPATH=/app/src \
+    # Inference is latency-bound on small tensors; more threads than cores adds
+    # contention, and the container is usually CPU-limited anyway.
+    OMP_NUM_THREADS=2
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system --gid 10001 forensics \
+ && useradd --system --uid 10001 --gid forensics --create-home forensics \
+ && mkdir -p /app/artifacts \
+ && chown -R forensics:forensics /app
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY --chown=forensics:forensics src/ /app/src/
+COPY --chown=forensics:forensics scripts/ /app/scripts/
+
+USER forensics
+
+# Model bundles are written here and read by the scorer.
+VOLUME ["/app/artifacts"]
+
+CMD ["python", "-m", "forensics.inference.scorer"]
