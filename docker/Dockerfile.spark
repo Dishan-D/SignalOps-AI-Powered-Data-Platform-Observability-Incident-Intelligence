@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1.7
+#
+# Spark Structured Streaming image for the normalisation job.
+#
+# Dependency JARs are baked in at build time rather than resolved at runtime
+# with `--packages`. Runtime resolution means every container start reaches out
+# to Maven Central: it is slow, it fails on an air-gapped or rate-limited
+# network, and it silently changes what you are running if a version moves.
+# Pinned URLs make the image reproducible and startup offline-capable.
+#
+# Versions below are the connector's declared transitive dependencies for
+# Spark 4.0.0 / Scala 2.13 (see spark-sql-kafka-0-10_2.13-4.0.0.pom).
+
+FROM apache/spark:4.0.0-python3
+
+USER root
+
+ARG SPARK_VERSION=4.0.0
+ARG SCALA_VERSION=2.13
+ARG KAFKA_CLIENTS_VERSION=3.9.0
+ARG COMMONS_POOL2_VERSION=2.12.0
+ARG POSTGRES_JDBC_VERSION=42.7.4
+ARG MAVEN=https://repo1.maven.org/maven2
+
+# Kafka source/sink, its token provider, and the compression codecs the broker
+# is configured to use (the producer publishes zstd; lz4/snappy cover the rest).
+RUN set -eux; \
+    cd "${SPARK_HOME}/jars"; \
+    for url in \
+      "${MAVEN}/org/apache/spark/spark-sql-kafka-0-10_${SCALA_VERSION}/${SPARK_VERSION}/spark-sql-kafka-0-10_${SCALA_VERSION}-${SPARK_VERSION}.jar" \
+      "${MAVEN}/org/apache/spark/spark-token-provider-kafka-0-10_${SCALA_VERSION}/${SPARK_VERSION}/spark-token-provider-kafka-0-10_${SCALA_VERSION}-${SPARK_VERSION}.jar" \
+      "${MAVEN}/org/apache/kafka/kafka-clients/${KAFKA_CLIENTS_VERSION}/kafka-clients-${KAFKA_CLIENTS_VERSION}.jar" \
+      "${MAVEN}/org/apache/commons/commons-pool2/${COMMONS_POOL2_VERSION}/commons-pool2-${COMMONS_POOL2_VERSION}.jar" \
+      "${MAVEN}/org/postgresql/postgresql/${POSTGRES_JDBC_VERSION}/postgresql-${POSTGRES_JDBC_VERSION}.jar" \
+    ; do \
+      echo "fetching $(basename "$url")"; \
+      curl -fsSL -O "$url"; \
+    done
+
+# Checkpoint directory, created here and owned by the unprivileged `spark` user
+# (uid 185) that the base image runs as.
+#
+# This has to happen in the image, not at runtime: Docker seeds a fresh named
+# volume from whatever the image has at the mount path, ownership included. Left
+# to the base image the directory is root:root, and the job dies on its first
+# micro-batch with "mkdir of file:/var/lib/spark/checkpoints/... failed" —
+# after Spark has started, which makes it look like a Spark problem rather than
+# a permissions one.
+RUN mkdir -p /var/lib/spark/checkpoints \
+ && chown -R 185:185 /var/lib/spark
+
+# The application package. Only src/ is needed — the job is submitted as a
+# module, and PYTHONPATH makes `forensics` importable on driver and executors.
+# It stays read-only to the runtime user; nothing should write into the code.
+COPY --chown=spark:spark src/ /app/src/
+
+# Run from the base image's own work directory, which is already owned by
+# `spark`, rather than from /app.
+#
+# Spark 4.0's ArtifactManager creates its scratch directory at a path RELATIVE
+# to the working directory, so a root-owned CWD fails with the thoroughly
+# unhelpful "Failed to create a temp directory (under artifacts) after 10
+# attempts!" — thrown after the session is up, which makes it look like a Spark
+# bug rather than a filesystem permission.
+WORKDIR /opt/spark/work-dir
+
+ENV PYTHONPATH=/app/src \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Back to the unprivileged user the base image provides.
+USER spark
+
+ENTRYPOINT ["/opt/spark/bin/spark-submit"]
+CMD ["/app/src/forensics/streaming/job.py"]
