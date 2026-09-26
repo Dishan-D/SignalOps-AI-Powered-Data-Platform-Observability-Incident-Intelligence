@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forensics-pipeline"
+version = "0.1.0"
+description = "Enterprise cyber-forensics and log anomaly detection pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "confluent-kafka>=2.5,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+log-producer = "forensics.ingestion.log_producer:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+# py310, NOT py311 — the apache/spark:4.0.0-python3 base image ships Python
+# 3.10.12, and the streaming tier imports forensics.common.*. Targeting py311
+# let ruff rewrite `dt.timezone.utc` to `dt.UTC` (UP017), which is 3.11+ only
+# and crashed the Spark job at runtime. The linter floor must match the lowest
+# interpreter any service actually runs, not the highest one we develop on.
+target-version = "py310"
+exclude = [".venv", ".venv-spark", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "ARG", "RET"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG001", "ARG002"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["forensics"]
+mypy_path = "src"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

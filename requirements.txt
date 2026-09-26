@@ -1,0 +1,9 @@
+# Runtime dependencies for the ingestion tier.
+# Pinned to a compatible range; regenerate a lockfile with `pip freeze` for
+# reproducible image builds in CI.
+
+confluent-kafka>=2.5,<3.0
+
+# PostgreSQL driver, used by scripts/migrate.py and the Phase 3 ledger writer.
+# [binary] ships a prebuilt libpq so the image needs no build toolchain.
+psycopg[binary]>=3.2,<4.0

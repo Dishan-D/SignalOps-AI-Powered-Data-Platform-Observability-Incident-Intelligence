@@ -1,0 +1,10 @@
+-r requirements.txt
+
+pytest>=8.0
+pytest-cov>=5.0
+ruff>=0.6
+mypy>=1.11
+
+# Spark tests (tests/spark) need a JVM (Java 17 or 21) and a Python the Spark
+# workers can run. Installed separately — see `make venv-spark`.
+# pyspark==4.0.0

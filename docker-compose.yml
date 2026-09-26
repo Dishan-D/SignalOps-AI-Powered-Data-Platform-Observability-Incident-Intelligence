@@ -1,0 +1,438 @@
+# Enterprise Cyber-Forensics & Log Anomaly Pipeline — local orchestration.
+#
+# Kafka runs in KRaft mode: the controller quorum is built into the broker, so
+# there is no ZooKeeper container. ZooKeeper is deprecated as of Kafka 3.5 and
+# removed in 4.0, and running it here would mean building a dependency the
+# project would have to unwind later.
+#
+#   docker compose up -d --build      # bring up the stack
+#   docker compose logs -f producer   # watch structured JSON logs
+#   docker compose --profile tools up -d kafka-ui   # optional web console
+#
+# All tuneables live in .env (copy from .env.example).
+
+name: forensics-pipeline
+
+# ---------------------------------------------------------------------------
+# Reusable fragments
+# ---------------------------------------------------------------------------
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-restart: &default-restart
+  restart: unless-stopped
+
+services:
+  # -------------------------------------------------------------------------
+  # Kafka broker + controller (KRaft, single node)
+  # -------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: forensics-kafka
+    <<: *default-restart
+    ports:
+      # 29092 is the only listener reachable from the host. Internal traffic
+      # uses kafka:9092 on the Compose network.
+      - "${KAFKA_EXTERNAL_PORT:-29092}:29092"
+    environment:
+      # -- KRaft identity ---------------------------------------------------
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-Nk018hRAQFytWskYqtQduw}
+
+      # -- Listeners --------------------------------------------------------
+      # Three listeners: INTERNAL for container-to-container, EXTERNAL for the
+      # host, CONTROLLER for the Raft quorum. Advertising the right hostname on
+      # each is the single most common cause of "connection refused" in local
+      # Kafka setups: a client resolves the *advertised* address, not the one it
+      # bootstrapped against.
+      #
+      # The bind host is left EMPTY (`INTERNAL://:9092`), not `0.0.0.0`. Both
+      # bind every interface, but they behave differently for the CONTROLLER
+      # listener: a controller listener is deliberately absent from
+      # advertised.listeners, so Kafka derives its advertised address from
+      # `listeners` — and then rejects the config outright with
+      # "advertised.listeners cannot use the nonroutable meta-address 0.0.0.0".
+      # An empty host resolves to the canonical hostname instead, which is
+      # routable on the Compose network.
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT:-29092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # -- Single-node durability -------------------------------------------
+      # Replication factor must be 1 on a one-broker cluster; raise these in
+      # any real deployment (3 / 3 / 2 is the usual production baseline).
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+
+      # -- Operational ------------------------------------------------------
+      # Topics are created explicitly by kafka-init. Auto-creation hides typos
+      # in topic names until they surface as silently empty consumers.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # Succeeds only once the broker is serving API requests — not merely once
+      # the process exists. Dependents wait on this.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    logging: *default-logging
+    networks: [forensics]
+
+  # -------------------------------------------------------------------------
+  # One-shot topic provisioning
+  # -------------------------------------------------------------------------
+  kafka-init:
+    image: apache/kafka:3.9.0
+    container_name: forensics-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/scripts/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC_RAW: ${KAFKA_RAW_LOGS_TOPIC:-logs.raw}
+      TOPIC_DLQ: ${KAFKA_DLQ_TOPIC:-logs.raw.dlq}
+      TOPIC_NORMALIZED: ${KAFKA_NORMALIZED_TOPIC:-logs.normalized}
+      TOPIC_ALERTS: ${KAFKA_ALERTS_TOPIC:-alerts.anomalies}
+      TOPIC_FEATURES_HOST: ${KAFKA_FEATURES_HOST_TOPIC:-features.host_activity}
+      TOPIC_FEATURES_PEER: ${KAFKA_FEATURES_PEER_TOPIC:-features.peer_connections}
+      TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-6}
+      TOPIC_RETENTION_MS: ${KAFKA_TOPIC_RETENTION_MS:-604800000}
+    volumes:
+      - ./scripts:/scripts:ro
+    restart: on-failure
+    logging: *default-logging
+    networks: [forensics]
+
+  # -------------------------------------------------------------------------
+  # Evidence store (Phase 3/4 target: normalised events + hash-chain ledger)
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: forensics-postgres
+    <<: *default-restart
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-forensics}
+      POSTGRES_USER: ${POSTGRES_USER:-forensics}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Scrypt beats the default md5 for stored credentials.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+    command:
+      # Modest tuning for a laptop; the ledger is write-heavy and append-only.
+      - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "max_connections=100"
+      - "-c"
+      - "log_min_duration_statement=500"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Scripts here run once, in filename order, on an empty data directory.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-forensics} -d ${POSTGRES_DB:-forensics}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    logging: *default-logging
+    networks: [forensics]
+
+  # -------------------------------------------------------------------------
+  # Ingestion tier — synthetic telemetry producer
+  # -------------------------------------------------------------------------
+  producer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: forensics/log-producer:${IMAGE_TAG:-0.1.0}
+    container_name: forensics-producer
+    <<: *default-restart
+    depends_on:
+      kafka:
+        condition: service_healthy
+      # Do not start until the topics actually exist, otherwise the first
+      # batch fails against a broker with auto-creation disabled.
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      SERVICE_NAME: log-producer
+      APP_ENV: ${APP_ENV:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_CLIENT_ID: forensics-log-producer
+      KAFKA_RAW_LOGS_TOPIC: ${KAFKA_RAW_LOGS_TOPIC:-logs.raw}
+      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-logs.raw.dlq}
+      KAFKA_ACKS: ${KAFKA_ACKS:-all}
+      KAFKA_ENABLE_IDEMPOTENCE: ${KAFKA_ENABLE_IDEMPOTENCE:-true}
+      KAFKA_COMPRESSION_TYPE: ${KAFKA_COMPRESSION_TYPE:-zstd}
+
+      PRODUCER_EVENTS_PER_SECOND: ${PRODUCER_EVENTS_PER_SECOND:-25}
+      PRODUCER_MAX_EVENTS: ${PRODUCER_MAX_EVENTS:-0}
+      PRODUCER_ANOMALY_RATE: ${PRODUCER_ANOMALY_RATE:-0.03}
+      PRODUCER_HOST_COUNT: ${PRODUCER_HOST_COUNT:-12}
+      PRODUCER_USER_COUNT: ${PRODUCER_USER_COUNT:-25}
+      PRODUCER_SEED: ${PRODUCER_SEED:-}
+      PRODUCER_DRY_RUN: ${PRODUCER_DRY_RUN:-false}
+      PRODUCER_DLQ_SPOOL_PATH: /var/spool/forensics/dlq.jsonl
+      PRODUCER_STATS_INTERVAL_SECONDS: ${PRODUCER_STATS_INTERVAL_SECONDS:-10}
+    volumes:
+      - dlq-spool:/var/spool/forensics
+    # SIGTERM must reach Python so the producer can flush; give it room to.
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    logging: *default-logging
+    networks: [forensics]
+
+  # -------------------------------------------------------------------------
+  # One-shot schema migration (Phase 2)
+  # -------------------------------------------------------------------------
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: forensics/log-producer:${IMAGE_TAG:-0.1.0}
+    container_name: forensics-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Runs to completion and exits; the Spark job waits on it.
+    command: ["python", "/app/scripts/migrate.py"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-forensics}
+      POSTGRES_USER: ${POSTGRES_USER:-forensics}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    restart: on-failure
+    logging: *default-logging
+    networks: [forensics]
+
+  # -------------------------------------------------------------------------
+  # Stream processing tier (Phase 2)
+  # -------------------------------------------------------------------------
+  spark:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.spark
+    image: forensics/spark-normalizer:${IMAGE_TAG:-0.1.0}
+    container_name: forensics-spark
+    <<: *default-restart
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      SERVICE_NAME: spark-normalizer
+      APP_ENV: ${APP_ENV:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_RAW_LOGS_TOPIC: ${KAFKA_RAW_LOGS_TOPIC:-logs.raw}
+      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-logs.raw.dlq}
+
+      SPARK_APP_NAME: forensics-normalizer
+      # local[*] runs driver and executors in one JVM — right for a laptop.
+      # Point at spark://master:7077 for a real cluster; nothing else changes.
+      SPARK_MASTER_URL: ${SPARK_MASTER_URL:-local[*]}
+      SPARK_CHECKPOINT_LOCATION: /var/lib/spark/checkpoints
+      SPARK_STARTING_OFFSETS: ${SPARK_STARTING_OFFSETS:-earliest}
+      SPARK_MAX_OFFSETS_PER_TRIGGER: ${SPARK_MAX_OFFSETS_PER_TRIGGER:-50000}
+      SPARK_TRIGGER_INTERVAL: ${SPARK_TRIGGER_INTERVAL:-10 seconds}
+      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-8}
+      SPARK_WATERMARK_DELAY: ${SPARK_WATERMARK_DELAY:-2 minutes}
+      SPARK_WINDOW_DURATION: ${SPARK_WINDOW_DURATION:-1 minute}
+      SPARK_WINDOW_SLIDE: ${SPARK_WINDOW_SLIDE:-30 seconds}
+
+      SPARK_POSTGRES_ENABLED: ${SPARK_POSTGRES_ENABLED:-true}
+      SPARK_POSTGRES_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-forensics}
+      SPARK_POSTGRES_USER: ${POSTGRES_USER:-forensics}
+      SPARK_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      SPARK_POSTGRES_BATCH_SIZE: ${SPARK_POSTGRES_BATCH_SIZE:-1000}
+    volumes:
+      # Checkpoints hold committed Kafka offsets plus aggregation state. Losing
+      # this volume means the job restarts from SPARK_STARTING_OFFSETS and
+      # replays (or skips) data — it is not a cache.
+      - spark-checkpoints:/var/lib/spark/checkpoints
+    ports:
+      - "${SPARK_UI_PORT:-4040}:4040"
+    stop_grace_period: 60s
+    logging: *default-logging
+    networks: [forensics]
+
+  # -------------------------------------------------------------------------
+  # Detection tier — model training (one-shot) (Phase 3)
+  # -------------------------------------------------------------------------
+  trainer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.inference
+    image: forensics/inference:${IMAGE_TAG:-0.1.0}
+    container_name: forensics-trainer
+    # Not started by `docker compose up`: training is an explicit act, not a
+    # side effect of bringing the stack up. Run it with `make train`.
+    profiles: ["train"]
+    command:
+      - "python"
+      - "/app/scripts/train_detector.py"
+      - "--epochs"
+      - "${TRAINER_EPOCHS:-30}"
+      - "--anomaly-rate"
+      - "${TRAINER_TEST_ANOMALY_RATE:-0.01}"
+      - "--target-fpr"
+      - "${SCORER_TARGET_FPR:-0.01}"
+      - "--out"
+      - "/app/artifacts/logbert"
+      - "--report"
+      - "/app/artifacts/report.json"
+    environment:
+      SERVICE_NAME: trainer
+      APP_ENV: ${APP_ENV:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - model-artifacts:/app/artifacts
+    logging: *default-logging
+    networks: [forensics]
+
+  # -------------------------------------------------------------------------
+  # Detection tier — streaming scorer (Phase 3)
+  # -------------------------------------------------------------------------
+  scorer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.inference
+    image: forensics/inference:${IMAGE_TAG:-0.1.0}
+    container_name: forensics-scorer
+    <<: *default-restart
+    # Also profile-gated: without a trained bundle in the volume the scorer has
+    # nothing to score with, and it refuses to start rather than emitting
+    # verdicts against an uncalibrated model.
+    profiles: ["detect"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      SERVICE_NAME: anomaly-scorer
+      APP_ENV: ${APP_ENV:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_NORMALIZED_TOPIC: ${KAFKA_NORMALIZED_TOPIC:-logs.normalized}
+      KAFKA_ALERTS_TOPIC: ${KAFKA_ALERTS_TOPIC:-alerts.anomalies}
+
+      SCORER_MODEL_PATH: /app/artifacts/logbert
+      SCORER_MODEL_VERSION: ${SCORER_MODEL_VERSION:-logbert-0.1.0}
+      SCORER_CONSUMER_GROUP: ${SCORER_CONSUMER_GROUP:-forensics-scorer}
+      SCORER_BATCH_SIZE: ${SCORER_BATCH_SIZE:-128}
+      SCORER_FLUSH_INTERVAL_SECONDS: ${SCORER_FLUSH_INTERVAL_SECONDS:-5}
+      SCORER_MAX_TRACKED_HOSTS: ${SCORER_MAX_TRACKED_HOSTS:-5000}
+      SCORER_TARGET_FPR: ${SCORER_TARGET_FPR:-0.01}
+      SCORER_POSTGRES_ENABLED: ${SCORER_POSTGRES_ENABLED:-true}
+      SCORER_POSTGRES_DSN: "host=postgres port=5432 dbname=${POSTGRES_DB:-forensics} user=${POSTGRES_USER:-forensics} password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}"
+    volumes:
+      - model-artifacts:/app/artifacts:ro
+    stop_grace_period: 30s
+    logging: *default-logging
+    networks: [forensics]
+
+  # -------------------------------------------------------------------------
+  # Evidence maintenance — normalise, seal, verify (Phase 2 + 4)
+  # -------------------------------------------------------------------------
+  sealer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: forensics/log-producer:${IMAGE_TAG:-0.1.0}
+    container_name: forensics-sealer
+    <<: *default-restart
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["python", "-m", "forensics.ledger.sealer"]
+    environment:
+      SERVICE_NAME: ledger-sealer
+      APP_ENV: ${APP_ENV:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-forensics}
+      POSTGRES_USER: ${POSTGRES_USER:-forensics}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+
+      # How long evidence may sit digested-but-unsealed. That window is the one
+      # in which a coordinated edit to both a row and its digest would go
+      # unnoticed, so it is a security parameter, not a performance knob.
+      LEDGER_SEAL_INTERVAL_SECONDS: ${LEDGER_SEAL_INTERVAL_SECONDS:-30}
+      LEDGER_SEAL_BATCH_SIZE: ${LEDGER_SEAL_BATCH_SIZE:-10000}
+
+      # This loop also drains evidence.raw_events into the 3NF model. Nothing
+      # else calls the transform, so turning it off leaves the landing table
+      # growing and evidence.events empty.
+      LEDGER_NORMALIZE_ENABLED: ${LEDGER_NORMALIZE_ENABLED:-true}
+      LEDGER_NORMALIZE_BATCH_SIZE: ${LEDGER_NORMALIZE_BATCH_SIZE:-10000}
+      # Full verification rehashes every event, so it runs on a slower cadence.
+      LEDGER_VERIFY_EVERY_CYCLES: ${LEDGER_VERIFY_EVERY_CYCLES:-20}
+    stop_grace_period: 30s
+    logging: *default-logging
+    networks: [forensics]
+
+  # -------------------------------------------------------------------------
+  # Optional: Kafka web console  (docker compose --profile tools up -d kafka-ui)
+  # -------------------------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: forensics-kafka-ui
+    profiles: ["tools"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "${KAFKA_UI_PORT:-8080}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: forensics-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    logging: *default-logging
+    networks: [forensics]
+
+networks:
+  forensics:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  postgres-data:
+  dlq-spool:
+  spark-checkpoints:
+  model-artifacts:

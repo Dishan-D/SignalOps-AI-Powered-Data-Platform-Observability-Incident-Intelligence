@@ -1,0 +1,37 @@
+# Secrets
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-spark/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Runtime artefacts
+# Trained model bundles are build output — regenerate with `make train`.
+# Weights are binary and change every run; keeping them out of history keeps
+# the repo small and diffs meaningful.
+artifacts/
+data/
+*.jsonl
+logs/
+spark-warehouse/
+checkpoints/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
