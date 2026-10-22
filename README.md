@@ -1,325 +1,789 @@
 SignalOps — AI-Powered Data Platform Observability & Incident Intelligence
 
-SignalOps is a real-time data platform for streaming telemetry, detecting anomalous activity, monitoring pipeline health, and assisting engineers with incident investigation. It combines distributed data processing, operational observability, machine-learning-based anomaly detection, and tamper-evident evidence storage in a single system.
+SignalOps is a real-time data platform designed to help engineers monitor streaming pipelines, detect anomalous activity, investigate operational failures, and understand incidents using evidence from telemetry and troubleshooting documentation.
 
-The project is built around Apache Kafka, Apache Spark Structured Streaming, PostgreSQL, and a transformer-based log anomaly detector. The planned operational layer adds interactive dashboards, diagnostic APIs, and an LLM-powered investigation assistant that retrieves relevant runbooks and produces evidence-grounded incident summaries.
+Built around Apache Kafka, Apache Spark Structured Streaming, and PostgreSQL, SignalOps ingests and transforms telemetry, extracts streaming features, detects anomalous behavior, and preserves forensic evidence through a tamper-evident ledger.
 
-Implementation status: The underlying streaming, anomaly-detection, and evidence-ledger pipeline is implemented and verified end-to-end. The SignalOps observability dashboard, operational API, and AI investigation assistant are planned extensions and should be marked complete only after implementation and testing.
+The planned operational layer extends this foundation with interactive dashboards, a REST API, an LLM-powered investigation agent, runbook retrieval, and Slack-based self-service workflows.
+
+The goal is to reduce manual investigation effort by turning raw pipeline signals, errors, detections, and operational documentation into actionable engineering insights.
+
+Implementation status: The streaming pipeline, anomaly detector, and evidence ledger are implemented and have been tested end-to-end. The observability dashboard, operational API, LLM investigation agent, runbook retrieval, and Slack integration are planned components until their implementation and tests are complete.
+
+⸻
+
+Table of Contents
+
+* Overview
+* Key Capabilities
+* Architecture
+* Technology Stack
+* Data Pipeline
+* Streaming Feature Engineering
+* Anomaly Detection
+* Tamper-Evident Evidence Ledger
+* SignalOps Observability
+* AI-Powered Incident Investigation
+* Operational API
+* Slack-Based Self-Service
+* Reliability and Security
+* Testing and Validation
+* Getting Started
+* Configuration
+* Roadmap
+* Limitations
+
+⸻
+
+Overview
+
+Modern data platforms process high volumes of events across distributed services. When processing delays, malformed records, unusual activity, or downstream failures occur, engineers often need to inspect multiple data sources and correlate evidence manually.
+
+SignalOps explores how streaming data infrastructure, anomaly detection, operational observability, and AI-assisted investigation can work together in a single system.
+
+The platform has three main layers:
+
+Layer	Responsibility
+Streaming Data Platform	Ingest telemetry, normalize events, validate records, and extract streaming features.
+Detection and Evidence	Identify anomalous activity and maintain tamper-evident forensic records.
+Operational Intelligence	Expose pipeline metrics, visualize failures, retrieve runbooks, and assist engineers with incident investigation.
+
+The first two layers form the implemented foundation. The operational intelligence layer is the next stage of development.
+
+Design Principles
+
+* Streaming-first: Process telemetry continuously rather than relying exclusively on periodic batch jobs.
+* Evidence-grounded: Base detections and investigation summaries on available events, metrics, and documented evidence.
+* Observable by design: Expose meaningful indicators of ingestion, processing, data quality, and downstream health.
+* Failure isolation: Keep core ingestion and processing independent of optional LLM services.
+* Reproducibility: Use containerized infrastructure and automated tests to validate behavior.
+* Explicit uncertainty: Distinguish observed facts from hypotheses when investigating incidents.
+* Incremental architecture: Add operational capabilities without replacing the existing streaming pipeline.
+
+⸻
 
 Key Capabilities
 
-* Real-Time Data Processing: Ingests structured log telemetry through Kafka and processes it using Spark Structured Streaming.
-* Pipeline Observability: Planned dashboards for ingestion throughput, processing latency, dead-letter queues, anomaly trends, and pipeline health.
-* Anomaly Detection: Uses a LogBERT-style transformer trained on benign log sequences to detect anomalous activity.
-* Incident Intelligence: Planned LLM-powered investigation workflow using structured tool calling and runbook retrieval.
-* Operational APIs: Planned FastAPI endpoints for pipeline metrics, failures, detection details, and evidence-integrity status.
-* Tamper-Evident Evidence: Uses SHA-256 digests, Merkle trees, and chained blocks to detect unauthorized evidence modifications.
-* Fault-Tolerant Ingestion: Supports durable Kafka publishing, validation with dead-letter routing, and local spooling when the broker is unavailable.
-* Reproducible Testing: Uses deterministic synthetic telemetry and automated tests across processing, model, and database components.
+Implemented
+
+* Synthetic enterprise telemetry generation.
+* Kafka-based event ingestion using KRaft mode.
+* Spark Structured Streaming for parsing, validation, normalization, and feature extraction.
+* Dead-letter routing for records that cannot be processed normally.
+* PostgreSQL persistence with a normalized evidence schema.
+* Log-template processing and transformer-based anomaly detection.
+* Tamper-evident evidence ledger using cryptographic hashes and Merkle-rooted blocks.
+* Docker Compose-based environment for local execution.
+* Automated tests for pipeline, model, database, and evidence-ledger components.
+
+Planned
+
+* Interactive operational dashboards using Streamlit and Plotly.
+* FastAPI endpoints for pipeline health, metrics, detections, and ledger status.
+* LLM-powered incident investigation with structured tool calling.
+* Runbook retrieval for context-aware troubleshooting.
+* Slack commands for engineering self-service.
+* Integration tests covering the complete operational investigation workflow.
+
+⸻
 
 Architecture
 
-                    Synthetic / External Telemetry
-                               |
-                               v
-                    +----------------------+
-                    |   Kafka (KRaft)      |
-                    |      logs.raw        |
-                    +----------+-----------+
-                               |
-                               v
-                    +----------------------+
-                    | Spark Structured     |
-                    | Streaming            |
-                    | Parse / Validate /   |
-                    | Normalize / Window   |
-                    +----+------------+----+
-                         |            |
-             +-----------+            +----------------+
-             |                                         |
-             v                                         v
-    +--------------------+                  +--------------------+
-    | Normalized Events  |                  | Feature Streams    |
-    | logs.normalized    |                  | Host / Peer        |
-    +---------+----------+                  +---------+----------+
-              |                                       |
-              v                                       v
-    +--------------------+                  +--------------------+
-    | PostgreSQL         |                  | Anomaly Detector   |
-    | Evidence &         |                  | Drain + LogBERT    |
-    | Analytics          |                  +---------+----------+
-    +---------+----------+                            |
-              |                                       v
-              v                             +--------------------+
-    +--------------------+                  | Detection Results  |
-    | SHA-256 Digests     |                  | & Anomaly Alerts   |
-    | Merkle-Chained      |                  +---------+----------+
-    | Evidence Ledger     |                            |
-    +---------+----------+                             |
-              |                                        |
-              +------------------+---------------------+
-                                 |
-                                 v
-                     +-------------------------+
-                     | SignalOps Operations    |
-                     | Layer (Planned)         |
-                     |                         |
-                     | Streamlit / Plotly      |
-                     | FastAPI                 |
-                     | LLM Investigation Agent |
-                     | Runbook Retrieval       |
-                     +-------------------------+
+High-Level Architecture
+
+                   SYNTHETIC TELEMETRY
+                           |
+                           v
+                  +------------------+
+                  | Telemetry Producer|
+                  +------------------+
+                           |
+                           v
+                  +------------------+
+                  |   Apache Kafka   |
+                  |                  |
+                  | logs.raw         |
+                  | logs.normalized  |
+                  | logs.raw.dlq     |
+                  +------------------+
+                           |
+                           v
+                  +------------------+
+                  | Apache Spark     |
+                  | Structured       |
+                  | Streaming        |
+                  +------------------+
+                           |
+                +----------+-----------+
+                |                      |
+                v                      v
+       +------------------+   +--------------------+
+       | PostgreSQL       |   | Feature Streams    |
+       | Evidence Storage |   | Host / Peer Activity|
+       +------------------+   +--------------------+
+                |                      |
+                |                      v
+                |             +--------------------+
+                |             | Anomaly Detector   |
+                |             +--------------------+
+                |                      |
+                +----------+-----------+
+                           |
+                           v
+                  +------------------+
+                  | Evidence Ledger  |
+                  | Hashes and       |
+                  | Merkle Roots     |
+                  +------------------+
+                 PLANNED OPERATIONAL LAYER
+                 -------------------------
+         PostgreSQL / Kafka / Spark Signals
+                           |
+                           v
+                  +------------------+
+                  | SignalOps API    |
+                  | FastAPI          |
+                  +------------------+
+                           |
+             +-------------+--------------+
+             |             |              |
+             v             v              v
+        Dashboard     Investigation    Slack
+        Streamlit     Agent + LLM      Integration
+        + Plotly      + Runbooks
+
+The operational components shown in the lower section are planned and should be marked as implemented only after they have been built and tested.
+
+Event Flow
+
+1. A telemetry producer generates synthetic enterprise log events.
+2. Kafka receives the raw events and distributes them to consumers.
+3. Spark Structured Streaming parses, validates, and normalizes incoming records.
+4. Invalid or unprocessable records are routed to a dead-letter topic.
+5. Valid records are transformed into structured records and streaming features.
+6. PostgreSQL stores the resulting evidence in a normalized schema.
+7. The detection pipeline identifies anomalous activity using learned log representations and behavioral features.
+8. Evidence is incorporated into the tamper-evident ledger.
+9. The planned operational layer will expose these signals through dashboards, APIs, and investigation workflows.
+
+⸻
 
 Technology Stack
 
 Component	Technology	Purpose
-Ingestion	Python, Apache Kafka 3.9	Reliable telemetry ingestion and event transport
-Stream Processing	Apache Spark 4.0 Structured Streaming	Validation, normalization, windowed feature extraction
-Data Storage	PostgreSQL 17	Normalized evidence, analytics, and detection results
-Anomaly Detection	PyTorch, LogBERT-style transformer	Sequence-based anomaly scoring
-Template Mining	Drain	Convert raw logs into structured log templates
-Evidence Integrity	SHA-256, Merkle trees	Tamper detection and evidence verification
-Operational API	FastAPI — planned	Programmatic access to pipeline health and incident data
-Dashboard	Streamlit, Plotly — planned	Operational metrics and incident visualization
-AI Investigation	LLM tool calling and runbook retrieval — planned	Evidence-grounded incident investigation
-Infrastructure	Docker Compose	Reproducible multi-service environment
-Quality	pytest, Ruff, mypy	Automated testing, linting, and type checking
+Language	Python 3.12	Pipeline, feature engineering, detection, and service development
+Event Streaming	Apache Kafka 3.9	Distributed event ingestion and topic-based processing
+Stream Processing	Apache Spark 4.0 Structured Streaming	Event transformation and streaming feature extraction
+Database	PostgreSQL 17	Structured evidence and pipeline data persistence
+Machine Learning	PyTorch	Transformer-based anomaly detection
+Log Processing	Drain-style log template extraction	Convert variable log messages into structured templates
+Containerization	Docker Compose	Local infrastructure orchestration
+Testing	pytest	Automated unit and integration testing
+Code Quality	Ruff, mypy	Linting and static type checking
+Operational API	FastAPI — planned	Read-only operational endpoints and investigation tools
+Dashboard	Streamlit, Plotly — planned	Pipeline metrics and interactive visualizations
+AI Investigation	LLM with structured tool calling — planned	Evidence-grounded incident investigation
+Documentation Retrieval	Runbook search — planned	Retrieve relevant troubleshooting procedures
+Engineering Integration	Slack API — planned	Self-service operational commands
 
-1. Streaming Data Pipeline
+⸻
 
-The pipeline ingests Elastic Common Schema (ECS)-style telemetry and routes it through Kafka and Spark.
+Data Pipeline
 
-Processing workflow
+The streaming pipeline provides the foundation for SignalOps.
 
-1. Ingestion: A deterministic synthetic telemetry producer publishes events to Kafka.
-2. Validation: Spark parses records against an explicit schema and identifies malformed or invalid events.
-3. Normalization: Valid events are flattened and transformed into a relational evidence model.
-4. Feature Extraction: Windowed host-activity and peer-connection features are generated for downstream detection.
-5. Persistence: Events and analytics are stored in PostgreSQL.
-6. Detection: The anomaly detector scores log sequences and publishes anomalous events.
-7. Integrity Protection: Evidence records receive cryptographic digests and are sealed into Merkle-rooted blocks.
+1. Telemetry Generation
 
-Invalid records are routed to logs.raw.dlq with their payloads preserved. This prevents a malformed event from terminating the entire streaming workload.
+A synthetic producer generates enterprise-style log events representing normal activity and selected attack scenarios.
 
-Kafka topics
+Example scenarios include:
+
+* SSH brute-force attempts.
+* Reverse-shell activity.
+* Command-and-control beaconing.
+* Privilege escalation.
+* Data exfiltration.
+
+The data is synthetic and intended for development, testing, and reproducible evaluation.
+
+2. Kafka Ingestion
+
+Kafka provides the ingestion and distribution layer.
+
+The documented topics are:
 
 Topic	Purpose
-logs.raw	Incoming telemetry
-logs.normalized	Validated and normalized events
-logs.raw.dlq	Invalid records and validation failures
-features.host_activity	Windowed host-level activity
-features.peer_connections	Host-to-destination connection features
+logs.raw	Incoming telemetry events
+logs.normalized	Normalized event stream
+logs.raw.dlq	Raw records that cannot be processed normally
+features.host_activity	Host-level behavioral features
+features.peer_connections	Peer and connection-related features
 alerts.anomalies	Anomaly alerts
 
-2. Data Platform Observability
+3. Stream Processing
 
-Planned SignalOps capability
+Spark Structured Streaming handles:
 
-The observability layer will expose pipeline behavior through a dashboard backed by actual operational data rather than hardcoded demonstration metrics.
+* Event parsing.
+* Schema validation.
+* Field normalization.
+* Feature extraction.
+* Routing of invalid records.
+* Persistence of processed data.
 
-Planned dashboard metrics
+This separates ingestion from downstream analytical processing and establishes a foundation for measuring processing health.
 
-* Event ingestion rate and processed-event counts
-* Processing latency and ingestion-to-normalization discrepancies
-* Dead-letter queue volume and validation failures
-* Anomaly counts and detection trends
-* Kafka, Spark, and PostgreSQL service health
-* Evidence-ledger verification status and unsealed-event backlog
+4. Persistence
 
-The dashboard will help engineers distinguish normal workload variation from operational failures and identify where a pipeline is experiencing delays.
+PostgreSQL stores processed records and forensic evidence.
 
-Unavailable measurements will be identified explicitly rather than presented as healthy or zero-valued metrics.
+The data model uses a normalized relational structure to reduce unnecessary duplication and support consistent querying.
 
-3. AI-Assisted Incident Investigation
+The planned operational layer will query this persisted information to calculate metrics and retrieve incident context.
 
-Planned SignalOps capability
+5. Dead-Letter Handling
 
-The investigation assistant will combine operational telemetry, diagnostic APIs, and troubleshooting documentation to help engineers investigate incidents.
+Records that fail validation or processing can be routed to a dead-letter topic for later inspection.
 
-Investigation workflow
+Dead-letter volume and representative failure reasons are useful operational signals because they can reveal schema drift, malformed input, and processing problems.
 
-1. Retrieve current pipeline health and relevant metrics.
-2. Identify recent processing failures, validation errors, or abnormal queue growth.
-3. Retrieve the affected detection or host timeline when applicable.
-4. Search relevant operational runbooks.
-5. Generate an incident summary containing observed evidence, supporting findings, possible explanations, and recommended investigation steps.
+Current scope: The dead-letter routing path exists. Automated replay and recovery workflows remain future work.
 
-Agent design principles
+⸻
 
-* Structured tool calling: Access operational information through defined tools rather than unrestricted database or shell access.
-* Evidence-grounded responses: Base incident summaries on returned telemetry and diagnostic results.
-* Runbook retrieval: Connect observed failures to relevant troubleshooting procedures.
-* Explicit uncertainty: Distinguish confirmed observations from hypotheses.
-* Read-only investigation: Prevent the agent from modifying evidence or executing arbitrary commands.
-* Failure isolation: Keep ingestion, stream processing, and dashboard data access independent of LLM availability.
+Streaming Feature Engineering
 
-This design targets repetitive diagnostic work while preserving human oversight over incident response.
+SignalOps extracts structured information from telemetry to support downstream analysis.
 
-4. Operational API
+The feature pipeline includes host-activity and peer-connection signals, which provide a more useful representation of behavior than unprocessed log messages alone.
 
-Planned SignalOps capability
+Examples of potential operational indicators include:
 
-A FastAPI service will expose a read-only interface to operational information.
+* Events processed over a time window.
+* Activity grouped by host.
+* Repeated connection attempts.
+* Changes in log-template frequency.
+* Failed or invalid records.
+* Unusual patterns in event sequences.
 
-Proposed endpoints include:
+These indicators can support anomaly detection and, once implemented, operational dashboards and incident investigations.
 
-Endpoint	Purpose
-GET /api/ops/health	Service and pipeline health
-GET /api/ops/metrics	Available operational metrics
-GET /api/ops/incidents	Recent incidents and failures
-GET /api/ops/dlq/summary	Dead-letter queue statistics
-GET /api/ops/detections	Recent anomaly detections
-GET /api/ops/hosts/{host_id}/timeline	Host activity for investigation
-GET /api/ops/ledger/status	Evidence-ledger integrity status
-POST /api/ops/investigate	Request an AI-assisted investigation
+The pipeline must distinguish measured signals from inferred explanations. For example, an increase in dead-letter records is an observation; attributing it to a schema change requires additional evidence.
 
-Endpoint contracts will be finalized against the existing database schema and actual telemetry sources during implementation.
+⸻
 
-5. Transformer-Based Anomaly Detection
+Anomaly Detection
 
-The existing detection pipeline uses Drain template mining and a LogBERT-style transformer to identify anomalous log sequences.
+SignalOps includes a log-anomaly detection pipeline combining log-template extraction with a transformer-based model.
 
-Detection workflow
+Detection Workflow
 
-Raw Log Message
-      |
-      v
-Drain Template Mining
-      |
-      v
-Log-Key Sequence
-      |
-      v
-Transformer-Based Scoring
-      |
-      v
-Calibrated Thresholds
-      |
-      v
-Anomaly Detection Results
+1. Convert variable log messages into structured templates using Drain-style processing.
+2. Represent log sequences for model-based analysis.
+3. Train the transformer-based detector on benign data.
+4. Evaluate the model on held-out examples.
+5. Emit anomaly results for downstream investigation.
 
-The detector is trained on benign sequences, reflecting the practical difficulty of obtaining representative attack labels. Synthetic attack labels are reserved for evaluation and excluded from model features.
+The implementation uses a compact LogBERT-style transformer built with PyTorch.
 
-Reported evaluation results
+Reported Evaluation
 
-Metric	LogBERT-style Detector	Unseen-Template Baseline
-Precision	0.853	1.000
-Recall	0.794	0.245
-F1-score	0.833	0.393
-PR-AUC	0.837	0.342
+The existing project documentation reports the following results:
 
-These measurements come from the project’s synthetic evaluation datasets. They demonstrate performance within the simulation and should not be interpreted as validated production-security performance.
+Metric	Reported Value
+Precision	0.853
+Recall	0.794
+F1 Score	0.833
+PR-AUC	0.837
 
-6. Tamper-Evident Evidence Ledger
+For the documented unseen-template baseline:
 
-The evidence store protects event integrity using cryptographic digests and chained Merkle blocks.
+Metric	Reported Value
+Precision	1.000
+Recall	0.245
+F1 Score	0.393
 
-Integrity workflow
+The baseline illustrates a key trade-off: high precision does not necessarily imply adequate recall.
 
-1. Generate a SHA-256 digest for each evidence record.
-2. Seal event digests into a Merkle tree.
-3. Store the Merkle root in a chained block.
-4. Link each block to the previous block using a cryptographic hash.
-5. Verify evidence independently using a Python verifier.
+These results come from the project’s synthetic evaluation setup. They should not be interpreted as evidence of production performance or generalization to real enterprise telemetry.
 
-The implementation detects event modification, coordinated event-and-digest modification after sealing, deleted events, missing digests, modified blocks, and broken block sequences.
+Important Evaluation Considerations
 
-Merkle inclusion proofs allow an individual event’s membership in a sealed block to be verified without disclosing every event in that block.
+* Keep labels out of model features to prevent data leakage.
+* Separate training and evaluation data appropriately.
+* Evaluate behavior on previously unseen log templates.
+* Consider false positives and false negatives separately.
+* Track model performance when the underlying log distribution changes.
 
-The ledger has an explicitly documented unsealed interval between event insertion and block sealing. The verification process reports unsealed events rather than treating them as already protected by a sealed block.
+⸻
 
-7. Reliability and Engineering Practices
+Tamper-Evident Evidence Ledger
 
-The existing implementation incorporates several operational safeguards:
+The evidence ledger provides a mechanism for detecting modifications to stored forensic records.
 
-* Kafka publishing with acknowledgements and idempotence enabled.
-* Explicit event schemas and validation-specific failure reasons.
-* Dead-letter routing for invalid records.
-* A local spool for records that cannot be delivered while Kafka is unavailable.
-* Idempotent database ingestion to handle redelivered events.
-* Checkpointed Spark processing.
-* Non-root containers and least-privilege database permissions.
-* Structured JSON logging with correlation identifiers.
-* Reproducible synthetic data generation.
-* Versioned database migrations with checksum validation.
+Design
 
-The current deployment is single-node and uses a single Kafka broker. Horizontal scale-out has not been verified.
+The implemented approach combines:
 
-8. Testing
+* SHA-256 event digests.
+* Sealed blocks of event hashes.
+* Merkle roots for integrity verification.
+* Chained block metadata.
+* Inclusion proofs for verifying whether an event belongs to a sealed block.
 
-The existing repository includes tests across core functionality, model behavior, Spark processing, and PostgreSQL integration.
+This makes it possible to verify whether records covered by a seal remain consistent with the recorded cryptographic commitments.
 
-Suite	Coverage
-Core	Event generation, configuration, schemas, ledger protocol
-Model	Template mining, sequence construction, training, calibration, scoring
-Spark	Validation, routing, windowing, checkpoint behavior
-Database	Normalization, idempotency, indexing, evidence integrity
+Documented Integrity Checks
 
-The repository documents approximately 270 tests, with Ruff and mypy checks. Exact counts should be confirmed against the current checkout before being quoted elsewhere.
+The implementation is designed to detect:
 
-The planned SignalOps layer will require additional tests covering dashboard metric calculations, API behavior, missing telemetry, agent tool execution, runbook retrieval, evidence grounding, service failures, and LLM unavailability.
+* Changes to an event after sealing.
+* Changes to an event and its stored digest after sealing.
+* Deletion of sealed events.
+* Modifications to sealed blocks.
+* Removal of sealed blocks.
 
-9. Quick Start
+Inclusion proofs provide a way to verify membership without requiring the verifier to trust the event’s surrounding application logic.
 
-Run the existing pipeline
+Limitations
+
+The ledger provides tamper evidence, not an unconditional guarantee against every form of compromise.
+
+In particular:
+
+* Events can remain unsealed before the next sealing operation.
+* Security depends on how sealing metadata and verification material are protected.
+* A compromised system may affect data before it is sealed.
+* Scale-out behavior and distributed failure scenarios require additional validation.
+
+SignalOps should expose the sealing status and unsealed backlog as operational signals once the dashboard and API are implemented.
+
+⸻
+
+SignalOps Observability
+
+Status: Planned
+
+The observability layer will turn pipeline state and persisted evidence into actionable operational views.
+
+Dashboard
+
+The proposed dashboard uses Streamlit and Plotly to present pipeline health, throughput, processing behavior, data quality, and detection activity.
+
+Planned panels include:
+
+Panel	Information
+Pipeline Health	Availability and health-check results for relevant components
+Ingestion	Incoming event volume and throughput over time
+Processing	Available Spark progress and processing indicators
+Data Quality	Landing-versus-normalized record counts and validation failures
+Dead-Letter Queue	DLQ volume and available failure details
+Anomaly Activity	Detection counts and trends over time
+Host Activity	Available host-level behavioral signals
+Evidence Integrity	Ledger verification status and unsealed backlog
+
+Only metrics that can be obtained reliably from the existing infrastructure should be displayed.
+
+For example, if end-to-end processing latency is not currently measured, it should not be presented as a real metric until timestamps and measurement logic have been added.
+
+Operational Metric Sources
+
+Signal	Proposed Source
+Ingestion volume	Kafka offsets, producer metrics, or available ingestion records
+Processing progress	Spark Structured Streaming progress information
+Normalization discrepancy	Comparison of appropriate landing and normalized record counts
+Dead-letter volume	Kafka dead-letter topic
+Anomaly trends	Persisted detection results
+Host timeline	Persisted event and feature records
+Ledger integrity	Ledger verification results and sealing metadata
+Component health	Actual health checks against relevant services
+
+The dashboard should distinguish zero values from unavailable measurements. A failed metric query must not be represented as evidence that the system is healthy.
+
+⸻
+
+AI-Powered Incident Investigation
+
+Status: Planned
+
+SignalOps will include an LLM-powered investigation agent that helps engineers interpret operational signals and investigate incidents.
+
+The agent will retrieve evidence through controlled application tools rather than directly accessing unrestricted databases or executing arbitrary commands.
+
+Investigation Workflow
+
+Incident or Engineer Request
+             |
+             v
+    Investigation Agent
+             |
+             v
+    Structured Tool Calls
+             |
+      +------+-------+
+      |              |
+      v              v
+Operational Data   Runbook Retrieval
+      |              |
+      +------+-------+
+             |
+             v
+   Evidence Correlation
+             |
+             v
+    Incident Summary
+
+Proposed Tools
+
+The agent may use a controlled set of application-level tools:
+
+* get_pipeline_health
+* get_pipeline_metrics
+* get_recent_failures
+* get_dlq_summary
+* get_detection_details
+* get_host_timeline
+* get_ledger_status
+* search_runbooks
+
+Each tool should return structured data with clear error states and timestamps where available.
+
+The agent should not invent unavailable metrics or treat a failed tool call as proof that no issue exists.
+
+Runbook Retrieval
+
+Runbooks will provide troubleshooting procedures for known operational situations.
+
+Example topics include:
+
+* Malformed or rejected records.
+* Increased dead-letter volume.
+* Unexpected processing delays.
+* Anomaly bursts.
+* Missing or inconsistent persisted records.
+* Evidence-ledger verification failures.
+
+The retrieval mechanism should return the relevant document sections and their source identifiers so the agent can distinguish documented procedures from its own interpretation.
+
+Investigation Output
+
+The agent should return a consistent structure:
+
+1. Summary: A concise description of the reported issue.
+2. Observed evidence: Metrics, events, errors, and timestamps actually retrieved.
+3. Potential explanation: Plausible causes supported by the available evidence.
+4. Relevant runbooks: Matching documentation and troubleshooting steps.
+5. Recommended next steps: Safe, actionable checks.
+6. Uncertainty: Missing evidence, failed queries, and alternative explanations.
+
+The agent should explicitly label hypotheses and avoid presenting correlation as confirmed causation.
+
+Failure Isolation
+
+The investigation agent is an optional operational layer.
+
+If the LLM provider is unavailable, the core ingestion, stream-processing, detection, and evidence-preservation workflows should continue operating. Dashboard and API functionality should remain available to the extent that their underlying dependencies are healthy.
+
+⸻
+
+Operational API
+
+Status: Planned
+
+A FastAPI service will expose a controlled interface for dashboards, the investigation agent, and Slack commands.
+
+Proposed Endpoints
+
+Method	Endpoint	Purpose
+GET	/api/ops/health	Report operational health checks
+GET	/api/ops/metrics	Return available pipeline metrics
+GET	/api/ops/incidents	Retrieve recent incidents or investigation candidates
+GET	/api/ops/dlq/summary	Summarize dead-letter activity
+GET	/api/ops/detections	Retrieve anomaly detection results
+GET	/api/ops/hosts/{host_id}/timeline	Retrieve a host’s available event timeline
+GET	/api/ops/ledger/status	Report ledger integrity and sealing status
+POST	/api/ops/investigate	Request an incident investigation
+
+These routes are a proposed interface, not a claim that the endpoints already exist.
+
+API Design Principles
+
+* Use typed request and response models.
+* Validate identifiers, query parameters, and request bodies.
+* Apply sensible limits to time ranges and result sizes.
+* Return explicit errors when data sources are unavailable.
+* Keep operational endpoints read-only by default.
+* Apply authentication and authorization appropriate to the deployment.
+* Avoid returning secrets or unnecessary sensitive log content.
+* Add request timeouts and structured logging.
+* Keep LLM calls outside latency-sensitive health and metrics requests.
+
+The investigation endpoint should accept a bounded incident context and return either a structured result or a job identifier for longer-running investigations.
+
+⸻
+
+Slack-Based Self-Service
+
+Status: Planned
+
+Slack integration will provide an engineering-facing interface to the same operational API and investigation service used by the dashboard.
+
+The purpose is to reduce repetitive support requests and make operational information accessible without requiring engineers to manually query multiple systems.
+
+Proposed Commands
+
+Command	Purpose
+/ops health	Retrieve current operational health information
+/ops incidents	List recent incidents or investigation candidates
+/ops investigate <incident_id>	Request an evidence-grounded investigation
+/ops runbook <query>	Search troubleshooting documentation
+
+Example Workflow
+
+An engineer notices a spike in pipeline failures and requests an investigation.
+
+SignalOps retrieves the relevant operational metrics, recent failure details, and matching runbook sections. The investigation agent then returns a concise summary that distinguishes observed evidence from possible causes.
+
+The engineer can use the findings to decide which diagnostic or remediation steps to perform.
+
+Integration Requirements
+
+* Validate Slack request signatures.
+* Keep bot tokens and signing secrets in environment variables or a secret manager.
+* Acknowledge Slack requests quickly.
+* Run longer investigations asynchronously.
+* Handle duplicate requests and retries safely.
+* Limit which users or channels can invoke sensitive operations.
+* Avoid exposing credentials, sensitive payloads, or unrestricted log contents.
+* Do not perform destructive remediation automatically.
+
+The Slack integration should call the shared operational API rather than implementing separate business logic.
+
+⸻
+
+Reliability and Security
+
+SignalOps is designed with a separation between data processing, detection, and optional investigation services.
+
+Reliability
+
+* Kafka decouples producers from downstream consumers.
+* Spark Structured Streaming handles continuous processing.
+* Invalid records can be routed to a dead-letter topic.
+* PostgreSQL provides persistent structured storage.
+* The evidence ledger enables integrity verification for sealed records.
+* Automated tests validate critical processing and integrity behavior.
+* Optional LLM services should not be required for core ingestion.
+
+Security Considerations
+
+* Keep credentials outside source control.
+* Validate incoming event schemas.
+* Apply access controls to operational APIs.
+* Verify Slack request signatures before processing commands.
+* Limit the agent to explicitly defined tools.
+* Avoid unrestricted SQL execution and arbitrary shell access from the agent.
+* Treat log content and retrieved documents as untrusted input.
+* Separate observations from hypotheses in generated summaries.
+* Preserve evidence integrity during investigation.
+
+Known Reliability Gaps
+
+The existing implementation documentation identifies areas requiring further work, including automated replay of spooled records, the unsealed ledger window, and validation of scale-out behavior.
+
+These should remain visible limitations until addressed and verified.
+
+⸻
+
+Testing and Validation
+
+The existing project documentation reports approximately 270 automated tests across the core pipeline, model, Spark, and database components. The exact total should be confirmed against the current repository because the existing documentation contains inconsistent counts.
+
+Existing Test Areas
+
+Area	Validation Focus
+Core Pipeline	Parsing, normalization, validation, and processing behavior
+Anomaly Model	Model behavior and evaluation logic
+Spark	Streaming transformations and feature extraction
+PostgreSQL	Persistence and relational data behavior
+Evidence Ledger	Hash verification, block integrity, and inclusion proofs
+Containerized Stack	End-to-end component integration
+
+Planned Operational Tests
+
+The observability and investigation layers should add tests covering:
+
+* Correct aggregation of pipeline metrics.
+* Missing and stale metric data.
+* API validation and error handling.
+* DLQ summaries and incident retrieval.
+* Runbook search relevance and source attribution.
+* Structured agent tool calls.
+* Unsupported claims and missing evidence in investigation summaries.
+* LLM provider timeouts and service unavailability.
+* Slack signature validation and request retries.
+* Ledger status reporting.
+* End-to-end investigation of controlled pipeline failures.
+
+The test suite should include failure scenarios rather than validating only successful requests.
+
+Reproducibility
+
+The project uses Docker Compose to run the local infrastructure and automated tests to validate individual components.
+
+Performance and model metrics should always be reported with their evaluation setup and limitations, particularly because the current detection data is synthetic.
+
+⸻
+
+Getting Started
+
+The existing streaming pipeline can be run independently of the planned operational layer.
+
+Prerequisites
+
+* Docker
+* Docker Compose
+* Git
+
+Python 3.12 is used by the project for local development and testing.
+
+1. Clone the Repository
 
 git clone https://github.com/Dishan-D/Cyber-Forensics-Log-Anomaly-Pipeline-.git
 cd Cyber-Forensics-Log-Anomaly-Pipeline-
 
-Configure the environment:
+2. Review the Configuration
 
-cp .env.example .env
+Inspect the repository’s environment and Docker Compose configuration before starting the stack.
 
-Set the required database credentials in .env, then start the existing services:
+Configure any required environment variables using the project’s documented examples. Do not commit credentials or secret values.
 
-make up
+3. Start the Infrastructure
 
-Useful commands include:
+docker compose up -d --build
 
-make producer-logs
-make spark-logs
-make evidence
-make ledger-status
-make ledger-verify
-make train
-make detect
-make alerts
-make detection-quality
+This command assumes the repository’s Compose configuration defines the required services and build targets.
 
-Run the existing checks:
+4. Check Service Status
 
-make check
-make test-model
-make test-spark
-make test-db
+docker compose ps
 
-See the repository’s Makefile and configuration files for exact prerequisites and behavior.
+Review the service logs if a component fails to start:
 
-The dashboard, operational API, and investigation assistant are not part of the verified existing pipeline described above. Their startup commands should be added here after those services have been implemented and integrated.
+docker compose logs --tail=100
 
-10. Roadmap
+5. Run the Tests
 
-* Operational metrics API backed by existing pipeline data
-* Interactive observability dashboard
-* Incident and processing-failure views
-* Read-only LLM investigation agent with structured tools
-* Runbook indexing and retrieval
-* Evidence-grounded incident summaries
-* Integration tests for operational failure scenarios
-* Optional Slack-based engineering self-service
-* End-to-end demonstration of detecting and investigating a controlled pipeline failure
+If the development environment and test dependencies are installed:
+
+pytest
+
+Use the repository’s current test configuration and documentation for any required integration-test setup.
+
+6. Shut Down
+
+docker compose down
+
+If you need to remove persisted local volumes, review the Compose configuration first. Removing volumes may delete local development data.
+
+Note: The commands above describe the documented Docker Compose workflow. Verify exact service names, configuration variables, and optional setup steps against the current repository before relying on them.
+
+⸻
+
+Configuration
+
+Configuration should be supplied through environment variables or an appropriate local environment file excluded from version control.
+
+Potential settings for the completed operational layer include:
+
+Variable	Purpose
+DATABASE_URL	PostgreSQL connection configuration
+KAFKA_BOOTSTRAP_SERVERS	Kafka broker addresses
+LLM_API_KEY	Credentials for the configured LLM provider
+LLM_MODEL	Configured model identifier
+SLACK_BOT_TOKEN	Slack bot credentials
+SLACK_SIGNING_SECRET	Slack request signature validation
+RUNBOOK_DIRECTORY	Location of runbook documents
+
+These names are suggested configuration conventions for the operational layer. They should be documented as supported settings only after the corresponding implementation uses them.
+
+Never commit populated secrets, API keys, bot tokens, or database passwords.
+
+⸻
+
+Roadmap
+
+Phase 1 — Streaming Foundation
+
+* Synthetic telemetry generation.
+* Kafka-based ingestion.
+* Spark Structured Streaming transformations.
+* Dead-letter routing.
+* PostgreSQL evidence persistence.
+* Transformer-based anomaly detection.
+* Tamper-evident evidence ledger.
+* Automated tests for the core components.
+
+Phase 2 — Operational Observability
+
+* Define a consistent operational metrics model.
+* Build FastAPI health and metrics endpoints.
+* Expose detections, DLQ summaries, and ledger status.
+* Build Streamlit and Plotly dashboards.
+* Add controlled failure scenarios and metric-validation tests.
+
+Phase 3 — AI-Assisted Investigation
+
+* Define typed investigation tools.
+* Implement runbook retrieval with source attribution.
+* Add structured LLM tool calling.
+* Generate evidence-grounded incident summaries.
+* Distinguish observations, hypotheses, and recommendations.
+* Test missing evidence, timeouts, and LLM unavailability.
+
+Phase 4 — Engineering Self-Service
+
+* Implement Slack request verification.
+* Add operational slash commands.
+* Connect Slack to the shared investigation service.
+* Support asynchronous investigations.
+* Add authorization, retry handling, and integration tests.
+
+Phase 5 — Further Improvements
+
+* Add automated replay and recovery for eligible failed records.
+* Validate behavior under larger workloads and distributed failures.
+* Improve model evaluation on additional datasets.
+* Explore MCP-based tool interoperability if it provides a clear benefit.
+* Add deployment and performance benchmarks.
+
+⸻
 
 Limitations
 
-* Anomaly-detection metrics are measured on synthetic datasets.
-* The deployment uses a single Kafka broker and a single Spark driver.
-* The producer’s local dead-letter spool does not yet have an automated replay job.
-* Existing anomaly alerts are stored, but automated incident triage and notification are not implemented.
-* Events remain unsealed for a bounded interval before ledger sealing.
-* The SignalOps dashboard, operational API, and AI investigation workflow remain planned until implemented and verified.
+SignalOps is a development and research project, not a production-ready security monitoring service.
 
-Project Goal
+Current limitations include:
 
-SignalOps aims to bring streaming data engineering, operational observability, and AI-assisted incident investigation into one coherent platform.
+* Synthetic telemetry does not capture the full complexity of real enterprise environments.
+* Reported model metrics are specific to the documented evaluation setup.
+* Anomaly scores require contextual interpretation and do not establish malicious intent by themselves.
+* Records may remain unsealed until the next ledger-sealing operation.
+* Automated dead-letter replay is not yet implemented.
+* Distributed scale-out and production failure scenarios require further validation.
+* The operational dashboard, API, AI investigation agent, runbook retrieval, and Slack integration are planned until implemented and tested.
+* LLM-generated explanations must remain grounded in retrieved evidence and should not be treated as authoritative without verification.
 
-The goal is to help engineers understand what a data pipeline is doing, identify where it is failing, retrieve relevant troubleshooting guidance, and investigate incidents using evidence from the underlying system.
+⸻
+
+Project Goals
+
+SignalOps explores the intersection of data engineering, distributed stream processing, observability, anomaly detection, and AI-assisted operations.
+
+The project aims to demonstrate how a streaming data platform can evolve beyond processing events into helping engineers understand system behavior, identify operational issues, retrieve relevant troubleshooting knowledge, and investigate incidents more efficiently.
+
+By combining Kafka, Spark Structured Streaming, PostgreSQL, machine learning, and a planned operational intelligence layer, SignalOps provides a foundation for building more transparent and supportable data infrastructure.
+
+⸻
+
+Repository: Cyber-Forensics-Log-Anomaly-Pipeline
