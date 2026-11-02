@@ -25,6 +25,8 @@ until the rows exist.
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import signal
 import sys
 import time
@@ -118,6 +120,53 @@ def seal_pending(connection: Any, batch_size: int) -> tuple[int, int]:
         events += int(rows[0][2])
 
 
+#: Findings persisted per verification run; the full list stays in the log.
+MAX_RECORDED_FINDINGS = 50
+
+
+def record_verification(
+    connection: Any,
+    report: Any,
+    *,
+    started_at: dt.datetime,
+    finished_at: dt.datetime,
+) -> bool:
+    """Persist a verification outcome to ``ops.ledger_verifications``.
+
+    Returns False instead of raising when the table is missing or the insert
+    fails: recording the result is for the operational layer, and must never
+    turn a successful verification into a failed maintenance cycle.
+    """
+    findings = [
+        {
+            "kind": f.kind,
+            "detail": f.detail[:500],
+            "event_id": f.event_id,
+            "sequence_number": f.sequence_number,
+        }
+        for f in report.findings[:MAX_RECORDED_FINDINGS]
+    ]
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ops.ledger_verifications
+                    (started_at, finished_at, intact, events_checked, blocks_checked,
+                     unsealed_events, finding_count, findings)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    started_at, finished_at, report.intact, report.events_checked,
+                    report.blocks_checked, report.unsealed_events,
+                    len(report.findings), json.dumps(findings),
+                ),
+            )
+    except Exception:
+        logger.warning("Could not record ledger verification", exc_info=True)
+        return False
+    return True
+
+
 def run(settings: SealerSettings) -> int:  # pragma: no cover - needs a database
     import psycopg
 
@@ -180,7 +229,12 @@ def run(settings: SealerSettings) -> int:  # pragma: no cover - needs a database
                         settings.verify_every_cycles
                         and cycles % settings.verify_every_cycles == 0
                     ):
+                        verify_started = dt.datetime.now(tz=dt.timezone.utc)
                         report = verifier.verify(connection)
+                        record_verification(
+                            connection, report, started_at=verify_started,
+                            finished_at=dt.datetime.now(tz=dt.timezone.utc),
+                        )
                         if not report.intact:
                             # Loud and non-zero: evidence integrity is the one
                             # failure this system exists to surface.
@@ -228,4 +282,11 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 
 
-__all__ = ["SealerSettings", "main", "normalize_pending", "run", "seal_pending"]
+__all__ = [
+    "SealerSettings",
+    "main",
+    "normalize_pending",
+    "record_verification",
+    "run",
+    "seal_pending",
+]
