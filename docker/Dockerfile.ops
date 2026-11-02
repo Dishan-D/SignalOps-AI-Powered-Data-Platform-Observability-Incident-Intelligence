@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1.7
+#
+# SignalOps operational layer: the FastAPI API and the Streamlit dashboard share
+# this image (the Compose service picks the command). Same conventions as the
+# pipeline images: multi-stage, no build toolchain at runtime, non-root user.
+
+FROM python:3.12-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /build
+COPY requirements.txt requirements-ops.txt ./
+RUN python -m venv /opt/venv \
+ && /opt/venv/bin/pip install --upgrade pip \
+ && /opt/venv/bin/pip install -r requirements-ops.txt
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONFAULTHANDLER=1 \
+    PATH="/opt/venv/bin:${PATH}" \
+    PYTHONPATH=/app/src \
+    SIGNALOPS_RUNBOOK_DIR=/app/runbooks \
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+RUN groupadd --system --gid 10001 forensics \
+ && useradd --system --uid 10001 --gid forensics --create-home forensics
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+COPY --chown=forensics:forensics src/ /app/src/
+COPY --chown=forensics:forensics runbooks/ /app/runbooks/
+COPY --chown=forensics:forensics pyproject.toml /app/
+
+USER forensics
+
+EXPOSE 8000 8501
+
+CMD ["uvicorn", "signalops.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

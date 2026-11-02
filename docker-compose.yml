@@ -273,6 +273,9 @@ services:
       SPARK_POSTGRES_USER: ${POSTGRES_USER:-forensics}
       SPARK_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       SPARK_POSTGRES_BATCH_SIZE: ${SPARK_POSTGRES_BATCH_SIZE:-1000}
+      # Persists per-batch query progress to ops.stream_progress for SignalOps.
+      # Optional and failure-isolated: unset it and the job runs unchanged.
+      SPARK_PROGRESS_DSN: "host=postgres port=5432 dbname=${POSTGRES_DB:-forensics} user=${POSTGRES_USER:-forensics} password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}"
     volumes:
       # Checkpoints hold committed Kafka offsets plus aggregation state. Losing
       # this volume means the job restarts from SPARK_STARTING_OFFSETS and
@@ -407,6 +410,72 @@ services:
     logging: *default-logging
     networks: [forensics]
 
+  # -------------------------------------------------------------------------
+  # SignalOps operational layer: API + dashboard (read-only over the pipeline)
+  # -------------------------------------------------------------------------
+  # Neither service is a dependency of anything in the pipeline: stopping
+  # them, or the LLM/Slack integrations they use, changes nothing upstream.
+  ops-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ops
+    image: forensics/signalops:${IMAGE_TAG:-0.1.0}
+    container_name: forensics-ops-api
+    <<: *default-restart
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-forensics}
+      POSTGRES_USER: ${POSTGRES_USER:-forensics}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_RAW_LOGS_TOPIC: ${KAFKA_RAW_LOGS_TOPIC:-logs.raw}
+      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-logs.raw.dlq}
+      SIGNALOPS_API_KEY: ${SIGNALOPS_API_KEY:-}
+      SIGNALOPS_LLM_PROVIDER: ${SIGNALOPS_LLM_PROVIDER:-}
+      SIGNALOPS_LLM_MODEL: ${SIGNALOPS_LLM_MODEL:-claude-opus-5-5}
+      SIGNALOPS_LLM_EFFORT: ${SIGNALOPS_LLM_EFFORT:-medium}
+      SIGNALOPS_LLM_REQUEST_TIMEOUT_SECONDS: ${SIGNALOPS_LLM_REQUEST_TIMEOUT_SECONDS:-60}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      SLACK_ALLOWED_USER_IDS: ${SLACK_ALLOWED_USER_IDS:-}
+      SLACK_ALLOWED_CHANNEL_IDS: ${SLACK_ALLOWED_CHANNEL_IDS:-}
+    ports:
+      # Loopback only: the API exposes forensic metadata. Put a TLS-terminating
+      # proxy in front (and set SIGNALOPS_API_KEY) before exposing it further.
+      - "127.0.0.1:${SIGNALOPS_API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ops/livez', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+    networks: [forensics]
+
+  dashboard:
+    image: forensics/signalops:${IMAGE_TAG:-0.1.0}
+    container_name: forensics-dashboard
+    <<: *default-restart
+    depends_on:
+      ops-api:
+        condition: service_healthy
+    command: ["streamlit", "run", "/app/src/signalops/dashboard/app.py",
+              "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+    environment:
+      SIGNALOPS_API_URL: http://ops-api:8000
+      SIGNALOPS_API_KEY: ${SIGNALOPS_API_KEY:-}
+    ports:
+      - "127.0.0.1:${SIGNALOPS_DASHBOARD_PORT:-8501}:8501"
+    logging: *default-logging
+    networks: [forensics]
   # -------------------------------------------------------------------------
   # Optional: Kafka web console  (docker compose --profile tools up -d kafka-ui)
   # -------------------------------------------------------------------------

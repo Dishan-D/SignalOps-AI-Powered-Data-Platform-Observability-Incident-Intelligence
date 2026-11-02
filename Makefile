@@ -253,3 +253,31 @@ evidence: ## Row counts across the evidence model
 .PHONY: dlq
 dlq: ## Show the producer's dead-letter spool
 	$(COMPOSE) exec producer sh -c 'cat /var/spool/forensics/dlq.jsonl 2>/dev/null || echo "spool is empty"'
+
+# --------------------------------------------------------------------------- #
+# SignalOps operational layer                                                  #
+# --------------------------------------------------------------------------- #
+
+.PHONY: venv-ops
+venv-ops: ## Install the SignalOps API/dashboard dependencies into the venv
+	$(VENV)/bin/pip install -r requirements-ops.txt
+
+.PHONY: test-ops
+test-ops: ## Run the SignalOps suite (fakes only; no infrastructure needed)
+	$(VENV)/bin/pytest tests/signalops tests/test_stream_progress.py
+
+.PHONY: ops-api
+ops-api: ## Run the operational API locally on :8000
+	PYTHONPATH=src $(VENV)/bin/uvicorn signalops.api.app:app --host 127.0.0.1 --port 8000
+
+.PHONY: ops-dashboard
+ops-dashboard: ## Run the Streamlit dashboard locally on :8501
+	$(VENV)/bin/streamlit run src/signalops/dashboard/app.py
+
+.PHONY: ops-health
+ops-health: ## Query the operational API's health endpoint
+	@curl -fsS -H "X-API-Key: $${SIGNALOPS_API_KEY:-}" http://127.0.0.1:$${SIGNALOPS_API_PORT:-8000}/api/ops/health | python3 -m json.tool
+
+.PHONY: demo-incident
+demo-incident: ## Inject a controlled validation incident and walk the SignalOps workflow
+	PYTHONPATH=src $(VENV)/bin/python scripts/demo_incident.py
