@@ -46,6 +46,10 @@ RUN set -eux; \
 # micro-batch with "mkdir of file:/var/lib/spark/checkpoints/... failed" —
 # after Spark has started, which makes it look like a Spark problem rather than
 # a permissions one.
+# psycopg lets the driver-side progress listener (forensics.streaming.progress)
+# persist query progress for SignalOps. The job runs without it if absent.
+RUN pip3 install --no-cache-dir "psycopg[binary]>=3.2,<4.0"
+
 RUN mkdir -p /var/lib/spark/checkpoints \
  && chown -R 185:185 /var/lib/spark
 

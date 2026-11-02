@@ -26,7 +26,13 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.streaming import StreamingQuery
 
-from forensics.common.config import AppSettings, ConfigError, KafkaSettings, SparkSettings
+from forensics.common.config import (
+    AppSettings,
+    ConfigError,
+    KafkaSettings,
+    SparkSettings,
+    env_str,
+)
 from forensics.common.logging import configure_logging, get_logger
 from forensics.streaming.features import (
     assert_no_label_leakage,
@@ -37,6 +43,12 @@ from forensics.streaming.normalize import (
     normalize_stream,
     to_dlq_records,
     to_normalized_records,
+)
+from forensics.streaming.progress import (
+    ProgressRecorder,
+    build_listener,
+    drain,
+    recorder_from_dsn,
 )
 
 SERVICE_NAME = "spark-normalizer"
@@ -242,6 +254,25 @@ def start_queries(
     return queries
 
 
+def attach_progress_listener(spark: SparkSession, dsn: str) -> ProgressRecorder | None:
+    """Persist query progress for the operational layer (migration 0005).
+
+    Optional and failure-isolated: if psycopg is missing or the listener cannot
+    be registered, the job runs exactly as before and only telemetry is lost.
+    """
+    try:
+        import psycopg  # noqa: F401 - availability probe; the writer imports it lazily
+
+        recorder = recorder_from_dsn(dsn)
+        spark.streams.addListener(build_listener(recorder, {}))
+        recorder.start()
+    except Exception:
+        logger.warning("Stream progress listener disabled", exc_info=True)
+        return None
+    logger.info("Stream progress listener attached", extra={"sink": "ops.stream_progress"})
+    return recorder
+
+
 def main() -> int:
     try:
         settings = AppSettings.from_env(SERVICE_NAME)
@@ -258,6 +289,9 @@ def main() -> int:
 
     spark = build_session(spark_cfg)
     spark.sparkContext.setLogLevel("WARN")
+
+    progress_dsn = env_str("SPARK_PROGRESS_DSN", "")
+    recorder = attach_progress_listener(spark, progress_dsn) if progress_dsn else None
 
     logger.info(
         "Starting streaming job",
@@ -286,6 +320,9 @@ def main() -> int:
         logger.critical("Streaming job failed", exc_info=True)
         return 1
     finally:
+        if recorder is not None:
+            drain(recorder)
+            recorder.stop()
         spark.stop()
 
     return 0
