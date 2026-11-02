@@ -1,0 +1,19 @@
+# SignalOps operational layer: API, dashboard, investigation agent, Slack.
+# Not needed by the ingestion, streaming, detection or ledger tiers, which keep
+# their own (smaller) images. Ranges follow the repository convention.
+-r requirements.txt
+
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.7,<3.0
+httpx>=0.27,<1.0
+
+# Dashboard
+streamlit>=1.46,<2.0
+plotly>=5.22,<8.0
+
+# Investigation agent (optional at runtime: only used when SIGNALOPS_LLM_PROVIDER=anthropic)
+anthropic>=2.0,<3.0
+
+# Slack request-signature verification
+slack_sdk>=3.27,<4.0
